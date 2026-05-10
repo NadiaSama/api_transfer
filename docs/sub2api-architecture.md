@@ -270,7 +270,180 @@ extended-cache-ttl-2025-04-11
 
 ---
 
-## 四、总结
+## 四、Claude 三种官方 API 接入方式（基于官方文档验证）
+
+> 以下内容基于 Anthropic 官方文档验证，确认 Sub2API 的对接方式均正确。
+
+### 4.1 Anthropic 官方直连 API
+
+| 项目 | 说明 |
+|------|------|
+| Base URL | `https://api.anthropic.com` |
+| 主端点 | `POST /v1/messages` |
+| 认证方式 | `x-api-key` Header (API Key from Console) |
+| 必需 Headers | `x-api-key`, `anthropic-version: 2023-06-01`, `content-type: application/json` |
+| API Key 获取 | [platform.claude.com/settings/keys](https://platform.claude.com/settings/keys) |
+| 计费方式 | 按量计费 (按 Token 数) |
+
+**请求示例**:
+```bash
+curl https://api.anthropic.com/v1/messages \
+  -H "x-api-key: YOUR_API_KEY" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "content-type: application/json" \
+  -d '{
+    "model": "claude-opus-4-7",
+    "max_tokens": 1024,
+    "messages": [{"role": "user", "content": "Hello"}]
+  }'
+```
+
+**Sub2API 实现验证**: ✅ 正确
+- 使用 `x-api-key` Header 传递 API Key
+- 目标 URL: `https://api.anthropic.com/v1/messages?beta=true`
+- `anthropic-version` 处理: 若客户端未携带则自动补上默认值 `2023-06-01`（见 `gateway_service.go:5236-5237, 6043-6044`）
+
+**官方文档**: https://platform.claude.com/docs/en/api/getting-started
+
+---
+
+### 4.2 Google Vertex AI
+
+| 项目 | 说明 |
+|------|------|
+| Endpoint URL 格式 | `https://{LOCATION}-aiplatform.googleapis.com/v1/projects/{PROJECT_ID}/locations/{LOCATION}/publishers/anthropic/models/{MODEL_ID}:streamRawPredict` |
+| 认证方式 | Google Cloud OAuth Bearer Token (`gcloud auth print-access-token`) |
+| 认证 Header | `Authorization: Bearer <gcloud_token>` |
+| 与直连 API 的差异 | 1) `model` 不在请求体中，而在 URL 里; 2) `anthropic_version` 在请求体中 (非 Header)，值为 `vertex-2023-10-16` |
+
+**端点类型**:
+- **Global** (`global`): 动态路由，最高可用性，无溢价
+- **Multi-region** (`us`, `eu`): 地理区域内动态路由，10% 溢价
+- **Regional** (`us-east1` 等): 固定区域，10% 溢价
+
+**Model ID 格式** (与直连 API 基本相同):
+
+| 模型 | Vertex AI Model ID |
+|------|-------------------|
+| Claude Opus 4.7 | `claude-opus-4-7` |
+| Claude Opus 4.6 | `claude-opus-4-6` |
+| Claude Sonnet 4.6 | `claude-sonnet-4-6` |
+| Claude Sonnet 4.5 | `claude-sonnet-4-5@20250929` |
+| Claude Haiku 4.5 | `claude-haiku-4-5@20251001` |
+
+**请求示例**:
+```bash
+curl -X POST \
+  -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+  -H "Content-Type: application/json" \
+  https://global-aiplatform.googleapis.com/v1/projects/MY_PROJECT_ID/locations/global/publishers/anthropic/models/claude-opus-4-7:streamRawPredict \
+  -d '{
+    "anthropic_version": "vertex-2023-10-16",
+    "messages": [{"role": "user", "content": "Hello"}],
+    "max_tokens": 100
+  }'
+```
+
+**Sub2API 实现验证**: ✅ 正确
+- 使用 Google Cloud Service Account 凭据认证
+- 目标端点: `{region}-aiplatform.googleapis.com`
+- 通过 `normalizeVertexAnthropicModelID()` 转换模型 ID
+- `anthropic-version` 处理: 从 HTTP Header 中删除（Vertex AI 要求放在请求体中作为 `anthropic_version: "vertex-2023-10-16"`）（见 `gateway_service.go:6149-6163`）
+
+**官方文档**: https://platform.claude.com/docs/en/docs/build-with-claude/claude-on-vertex-ai
+
+---
+
+### 4.3 AWS Bedrock
+
+AWS Bedrock 目前有**两套 API**:
+
+#### A. 新版 — Claude in Amazon Bedrock (Messages API)
+
+| 项目 | 说明 |
+|------|------|
+| Endpoint URL 格式 | `https://bedrock-mantle.{region}.api.aws/anthropic/v1/messages` |
+| 认证方式 | AWS SigV4 / IAM Assumed Roles / Bearer Token |
+| API 格式 | 与 Anthropic 直连 API 完全相同的 Messages API 请求体 |
+| 流式传输 | 标准 SSE (与直连 API 相同) |
+| 可用模型 | `anthropic.claude-opus-4-7`, `anthropic.claude-haiku-4-5` |
+
+**请求示例**:
+```bash
+curl https://bedrock-mantle.us-east-1.api.aws/anthropic/v1/messages \
+  --aws-sigv4 "aws:amz:us-east-1:bedrock-mantle" \
+  --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY" \
+  -H "x-amz-security-token: $AWS_SESSION_TOKEN" \
+  -H "content-type: application/json" \
+  -H "anthropic-version: 2023-06-01" \
+  -d '{
+    "model": "anthropic.claude-opus-4-7",
+    "max_tokens": 1024,
+    "messages": [{"role": "user", "content": "Hello"}]
+  }'
+```
+
+#### B. 旧版 — Claude on Amazon Bedrock (InvokeModel/Converse API)
+
+| 项目 | 说明 |
+|------|------|
+| 认证方式 | AWS 标准凭据 (SigV4) |
+| API 格式 | AWS InvokeModel / Converse API |
+| 流式传输 | AWS event-stream 编码 |
+| Model ID 格式 | `anthropic.claude-opus-4-6-v1` (带 ARN 版本) |
+| Global 路由 | 加 `global.` 前缀: `global.anthropic.claude-opus-4-6-v1` |
+
+**Bedrock Model ID 对照表**:
+
+| 模型 | Base Model ID | Global |
+|------|--------------|--------|
+| Claude Opus 4.6 | `anthropic.claude-opus-4-6-v1` | Yes |
+| Claude Sonnet 4.6 | `anthropic.claude-sonnet-4-6` | Yes |
+| Claude Sonnet 4.5 | `anthropic.claude-sonnet-4-5-20250929-v1:0` | Yes |
+| Claude Haiku 4.5 | `anthropic.claude-haiku-4-5-20251001-v1:0` | Yes |
+
+**请求示例 (boto3)**:
+```python
+import boto3, json
+
+bedrock = boto3.client(service_name="bedrock-runtime")
+body = json.dumps({
+    "max_tokens": 256,
+    "messages": [{"role": "user", "content": "Hello"}],
+    "anthropic_version": "bedrock-2023-05-31",
+})
+
+response = bedrock.invoke_model(
+    body=body, modelId="global.anthropic.claude-opus-4-6-v1"
+)
+```
+
+**Sub2API 实现验证**: ✅ 正确
+- 使用 AWS 凭据认证
+- 支持 Bedrock 模型 ID 映射
+- `anthropic-version` 处理: 若客户端未携带则自动补上 `2023-06-01`（见 `gateway_service.go:9124-9125, 9223-9224`）
+
+**官方文档**:
+- 新版: https://platform.claude.com/docs/en/docs/build-with-claude/claude-in-amazon-bedrock
+- 旧版: https://platform.claude.com/docs/en/docs/build-with-claude/claude-on-amazon-bedrock
+
+---
+
+### 4.4 三种方式对比总结
+
+| 维度 | Anthropic 直连 | Google Vertex AI | AWS Bedrock |
+|------|---------------|-----------------|-------------|
+| **认证** | API Key (`x-api-key`) | Google Cloud OAuth | AWS SigV4 / IAM / Bearer |
+| **Base URL** | `api.anthropic.com` | `{region}-aiplatform.googleapis.com` | `bedrock-mantle.{region}.api.aws` |
+| **计费** | Anthropic 账单 | Google Cloud 账单 | AWS 账单 |
+| **Model ID** | `claude-opus-4-7` | `claude-opus-4-7` | `anthropic.claude-opus-4-7` |
+| **API 格式** | Messages API | 近似 Messages API (微小差异) | Messages API (新版) / InvokeModel (旧版) |
+| **特性延迟** | 最新功能首发 | 可能有延迟 | 可能有延迟 |
+| **适用场景** | 直接集成、全功能 | 已有 GCP 基础设施 | 已有 AWS 基础设施 |
+
+---
+
+## 五、总结
 
 Sub2API 是一个**生产级 API 网关**，其核心价值在于：
 
@@ -279,3 +452,17 @@ Sub2API 是一个**生产级 API 网关**，其核心价值在于：
 3. **Claude Code 生态集成** — 检测官方 CLI、伪装第三方客户端、管理 OAuth Token 生命周期
 4. **智能调度** — Sticky Session、优先级调度、故障转移、并发控制
 5. **精细计费** — Token 级用量跟踪，多维度配额管理
+
+---
+
+## 六、官方文档参考链接
+
+| 文档 | URL |
+|------|-----|
+| API Getting Started | https://platform.claude.com/docs/en/api/getting-started |
+| Models Overview | https://platform.claude.com/docs/en/docs/about-claude/models |
+| Claude on Vertex AI | https://platform.claude.com/docs/en/docs/build-with-claude/claude-on-vertex-ai |
+| Claude in Amazon Bedrock (新版) | https://platform.claude.com/docs/en/docs/build-with-claude/claude-in-amazon-bedrock |
+| Claude on Amazon Bedrock (旧版) | https://platform.claude.com/docs/en/docs/build-with-claude/claude-on-amazon-bedrock |
+| Client SDKs | https://platform.claude.com/docs/en/api/client-sdks |
+| Pricing | https://platform.claude.com/docs/en/about-claude/pricing |
