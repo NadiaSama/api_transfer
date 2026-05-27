@@ -1,0 +1,172 @@
+# =============================================================================
+# Billing Proxy Comparison Test - Docker Compose
+# =============================================================================
+# Orchestrates: mock-server, proxy.js, postgres, redis, sub2api, test-runner
+#
+# Usage:
+#   docker compose up --build --abort-on-container-exit
+# =============================================================================
+
+services:
+  # ─── Mock Anthropic API ────────────────────────────────────────────────────
+  mock-server:
+    image: node:24-alpine
+    networks:
+      default:
+        ipv4_address: 172.30.50.2
+    working_dir: /app
+    volumes:
+      - ./mock-server.js:/app/mock-server.js:ro
+    command: ["node", "mock-server.js"]
+    environment:
+      - MOCK_PORT=9999
+      - PROXY_JS_TOKEN=sk-ant-proxy-js-test-token
+      - SUB2API_BILLING_TOKEN=sk-ant-sub2api-test-token
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-T", "2", "-O", "/dev/null", "http://127.0.0.1:9999/health"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 2s
+
+  # ─── proxy.js (OpenClaw Billing Proxy) ─────────────────────────────────────
+  proxy-js:
+    image: node:24-alpine
+    networks:
+      default:
+        ipv4_address: 172.30.50.6
+    working_dir: /app
+    volumes:
+      - ../../third_party/openclaw-billing-proxy:/app:ro
+    command: ["node", "proxy.js", "--port", "18801"]
+    environment:
+      - PROXY_HOST=0.0.0.0
+      - UPSTREAM_URL=http://172.30.50.2:9999
+      - OAUTH_TOKEN=sk-ant-proxy-js-test-token
+    depends_on:
+      mock-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-T", "2", "-O", "/dev/null", "http://127.0.0.1:18801/health"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 3s
+
+  # ─── PostgreSQL (Sub2API dependency) ───────────────────────────────────────
+  postgres:
+    image: postgres:18-alpine
+    networks:
+      default:
+        ipv4_address: 172.30.50.4
+    environment:
+      - POSTGRES_USER=sub2api
+      - POSTGRES_PASSWORD=testpassword
+      - POSTGRES_DB=sub2api
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sub2api -d sub2api"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  # ─── Redis (Sub2API dependency) ────────────────────────────────────────────
+  redis:
+    image: redis:8-alpine
+    networks:
+      default:
+        ipv4_address: 172.30.50.3
+    command: ["redis-server"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 2s
+
+  # ─── Sub2API ───────────────────────────────────────────────────────────────
+  sub2api:
+    build:
+      context: ../../worktrees/sub2api
+      dockerfile: Dockerfile
+    networks:
+      default:
+        ipv4_address: 172.30.50.5
+    command:
+      - sh
+      - -lc
+      - |
+        until nc -z 172.30.50.4 5432; do
+          echo "Waiting for postgres port..."
+          sleep 1
+        done
+        exec /app/sub2api
+    environment:
+      - AUTO_SETUP=true
+      - RUN_MODE=simple
+      - SERVER_HOST=0.0.0.0
+      - SERVER_PORT=8080
+      - SERVER_MODE=debug
+      - DATABASE_HOST=172.30.50.4
+      - DATABASE_PORT=5432
+      - DATABASE_USER=sub2api
+      - DATABASE_PASSWORD=testpassword
+      - DATABASE_DBNAME=sub2api
+      - DATABASE_SSLMODE=disable
+      - REDIS_HOST=172.30.50.3
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=
+      - REDIS_DB=0
+      - ADMIN_EMAIL=admin@test.local
+      - ADMIN_PASSWORD=testpassword123
+      - JWT_SECRET=test-jwt-secret-for-comparison-32bytes-minimum
+      - TZ=Asia/Shanghai
+      # Override Claude API URL to point to mock server
+      - CLAUDE_API_URL=http://172.30.50.2:9999/v1/messages
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mock-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-T", "5", "-O", "/dev/null", "http://127.0.0.1:8080/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  # ─── Test Runner ───────────────────────────────────────────────────────────
+  test-runner:
+    image: node:24-alpine
+    networks:
+      default:
+        ipv4_address: 172.30.50.7
+    working_dir: /app
+    volumes:
+      - ./compare-test.js:/app/compare-test.js:ro
+      - ./payloads:/app/payloads:ro
+    command: ["node", "compare-test.js"]
+    environment:
+      - PROXY_JS_URL=http://172.30.50.6:18801
+      - SUB2API_URL=http://172.30.50.5:8080
+      - MOCK_URL=http://172.30.50.2:9999
+      - ADMIN_URL=http://172.30.50.5:8080
+      - ADMIN_EMAIL=admin@test.local
+      - ADMIN_PASSWORD=testpassword123
+      - SUB2API_API_KEY=test-billing-key
+      - SUB2API_BILLING_TOKEN=sk-ant-sub2api-test-token
+    depends_on:
+      proxy-js:
+        condition: service_healthy
+      sub2api:
+        condition: service_healthy
+      mock-server:
+        condition: service_healthy
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.30.50.0/24

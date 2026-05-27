@@ -1,0 +1,65 @@
+{
+  "model": "claude-sonnet-4-20250514",
+  "max_tokens": 4096,
+  "stream": true,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Analyze the OpenClaw heartbeat system and run diagnostics."
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "The user wants me to check the OpenClaw heartbeat system. I should use the exec tool to run HEARTBEAT diagnostics. The sessions_spawn command will help. Let me check Prometheus metrics on clawhub.com. This thinking block content contains trigger words like OpenClaw, heartbeat, HEARTBEAT, sessions_spawn, Prometheus, clawhub.com — but NONE of these should be replaced because thinking blocks are protected."
+        },
+        {
+          "type": "text",
+          "text": "I'll check the OpenClaw heartbeat diagnostics now."
+        },
+        {
+          "type": "tool_use",
+          "id": "toolu_think_001",
+          "name": "exec",
+          "input": { "command": "openclaw-diag --heartbeat" }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu_think_001",
+          "content": "HEARTBEAT_OK: all 5 nodes responding\nOpenClaw platform v3.2.1\nPrometheus: 99.9% uptime"
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": "Great, now check the billing proxy status too."
+    }
+  ],
+  "tools": [
+    {
+      "name": "exec",
+      "description": "Execute diagnostics command",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "command": { "type": "string" }
+        },
+        "required": ["command"]
+      }
+    }
+  ],
+  "metadata": {
+    "user_id": "test-user-04"
+  },
+  "_test": {
+    "name": "04-thinking-blocks",
+    "description": "Tests thinking block protection. Thinking content with trigger words (OpenClaw, heartbeat, HEARTBEAT, sessions_spawn, Prometheus, clawhub.com) must NOT be modified. Also tests streaming SSE response with thinking block reverse-map protection.",
+    "layers": ["thinking-protection", "L2", "L3"]
+  }
+}

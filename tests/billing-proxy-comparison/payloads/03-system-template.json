@@ -1,0 +1,32 @@
+{
+  "model": "claude-sonnet-4-20250514",
+  "max_tokens": 2048,
+  "messages": [
+    {
+      "role": "user",
+      "content": "What tasks are running on the Prometheus monitoring system?"
+    }
+  ],
+  "system": "You are a personal assistant for managing the OpenClaw platform.\n\n<config>\nplatform_name: OpenClaw\nversion: 3.2.1\nfeatures:\n  - heartbeat monitoring\n  - sessions_spawn for task creation\n  - sessions_list for task listing\n  - third-party integrations via clawhub.com\n  - billing proxy management\n  - lossless-claw memory system\n  - Prometheus metrics collection\nendpoints:\n  api: https://api.clawhub.com\n  dashboard: https://dash.clawhub.com\n  billing: https://billing.clawhub.com\nmax_agents: 50\ndefault_session_timeout: 3600\nlog_level: debug\nretry_policy:\n  max_retries: 3\n  backoff_ms: 1000\nsecurity:\n  auth_method: oauth2\n  token_expiry: 86400\n  refresh_enabled: true\nnotifications:\n  channels: [email, slack, webhook]\n  heartbeat_interval: 30\n  alert_threshold: 5\nThis is a very long configuration section that should be detected and stripped by Layer 4. It contains many OpenClaw-specific terms that would trigger detection. The config section pattern is: identity marker + config block with platform-specific settings.\n</config>",
+  "tools": [
+    {
+      "name": "exec",
+      "description": "Execute commands on the system",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "command": { "type": "string" }
+        },
+        "required": ["command"]
+      }
+    }
+  ],
+  "metadata": {
+    "user_id": "test-user-03"
+  },
+  "_test": {
+    "name": "03-system-template",
+    "description": "Tests L4 (system config stripping). System prompt starts with identity marker 'You are a personal assistant' and has a long <config> section that should be stripped and replaced with paraphrase.",
+    "layers": ["L4"]
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "model": "claude-sonnet-4-20250514",
+  "max_tokens": 2048,
+  "messages": [
+    {
+      "role": "user",
+      "content": "List running processes on the OpenClaw server."
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "I'll check the running processes for you. Let me use the exec tool to run `ps aux`."
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "exec",
+      "description": "Execute shell commands on the server",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "command": { "type": "string" },
+          "session_id": { "type": "string" }
+        },
+        "required": ["command"]
+      }
+    }
+  ],
+  "metadata": {
+    "user_id": "test-user-05"
+  },
+  "_test": {
+    "name": "05-trailing-prefill",
+    "description": "Tests L8 (strip trailing assistant prefill). The last message is an assistant text-only message that should be stripped because it's a prefill hint. Also tests L2/L3/L5/L6.",
+    "layers": ["L8", "L2", "L3", "L5", "L6"]
+  }
+}

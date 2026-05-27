@@ -1,0 +1,150 @@
+{
+  "model": "claude-sonnet-4-20250514",
+  "max_tokens": 8192,
+  "stream": true,
+  "messages": [
+    {
+      "role": "user",
+      "content": "我需要在 OpenClaw 平台上完成以下任务：\n1. 检查 heartbeat 状态 ❤️\n2. 通过 clawhub.com 搜索最新文档\n3. 使用 sessions_spawn 创建新任务\n4. 查看 Prometheus 监控面板\n5. 运行 billing proxy 诊断\n\n请逐一执行。"
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "用户要求执行多个 OpenClaw 平台操作。我需要依次使用 exec、web_search、sessions_spawn 等工具。HEARTBEAT 系统需要先检查，然后是 Prometheus 监控。billing proxy 状态也需要确认。clawhub.com 文档搜索可以并行进行。注意：这段思考内容中的所有触发词都不应被替换。"
+        },
+        {
+          "type": "text",
+          "text": "好的，我来逐一执行这些 OpenClaw 平台任务。首先检查 heartbeat 状态。"
+        },
+        {
+          "type": "tool_use",
+          "id": "toolu_full_001",
+          "name": "exec",
+          "input": { "command": "openclaw-ctl heartbeat --check-all" }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu_full_001",
+          "content": "HEARTBEAT_OK: 全部 8 个节点正常响应 ✅\nOpenClaw v3.2.1 running inside production cluster\nPrometheus metrics endpoint: https://metrics.clawhub.com/api/v1\n上次检查时间: 2025-01-15T10:30:00Z"
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": "继续执行第2步，搜索文档。同时告诉我 lossless-claw 内存系统的状态。"
+    }
+  ],
+  "system": "You are a personal assistant for managing the OpenClaw platform.\n\n<config>\nplatform: OpenClaw Enterprise\nregion: ap-southeast-1\nlanguage: zh-CN\nfeatures: [heartbeat, sessions_spawn, sessions_list, billing-proxy, lossless-claw, Prometheus]\nmax_concurrent_agents: 100\nclawhub_api: https://api.clawhub.com/v2\nsupport: support@clawhub.com\n</config>",
+  "tools": [
+    {
+      "name": "exec",
+      "description": "在 OpenClaw 平台上执行 shell 命令，返回 stdout/stderr。支持所有系统命令和 openclaw-ctl 工具链。",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "command": { "type": "string", "description": "要执行的命令" },
+          "session_id": { "type": "string", "description": "会话 ID" },
+          "agent_id": { "type": "string", "description": "代理 ID" },
+          "wake_at": { "type": "string", "description": "定时唤醒时间" }
+        },
+        "required": ["command"]
+      }
+    },
+    {
+      "name": "web_search",
+      "description": "通过 clawhub.com 搜索引擎查找信息",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string", "description": "搜索关键词" },
+          "conversation_id": { "type": "string", "description": "对话上下文 ID" }
+        },
+        "required": ["query"]
+      }
+    },
+    {
+      "name": "web_fetch",
+      "description": "获取网页内容",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "url": { "type": "string", "description": "URL 地址" }
+        },
+        "required": ["url"]
+      }
+    },
+    {
+      "name": "lcm_expand_query",
+      "description": "扩展 lossless-claw 内存查询",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string" },
+          "summaryIds": { "type": "array", "items": { "type": "string" } }
+        },
+        "required": ["query"]
+      }
+    },
+    {
+      "name": "lcm_expand",
+      "description": "展开 lossless-claw 内存摘要",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "summary_id": { "type": "string" }
+        },
+        "required": ["summary_id"]
+      }
+    },
+    {
+      "name": "lcm_grep",
+      "description": "在 lossless-claw 内存中搜索",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "pattern": { "type": "string" }
+        },
+        "required": ["pattern"]
+      }
+    },
+    {
+      "name": "memory_search",
+      "description": "搜索知识库",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string" },
+          "wake_event": { "type": "string", "description": "触发事件" }
+        },
+        "required": ["query"]
+      }
+    },
+    {
+      "name": "process",
+      "description": "管理后台进程",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "action": { "type": "string", "enum": ["start", "stop", "restart", "status"] },
+          "system_event": { "type": "string", "description": "系统事件标识" }
+        },
+        "required": ["action"]
+      }
+    }
+  ],
+  "metadata": {
+    "user_id": "test-user-06"
+  },
+  "_test": {
+    "name": "06-full-realistic",
+    "description": "Comprehensive test: ALL layers + Chinese text + emoji. Tests L1-L8, thinking protection, streaming, tool renames (exec, web_search, web_fetch, lcm_expand_query, lcm_expand, lcm_grep, memory_search, process), property renames (session_id, agent_id, conversation_id, summaryIds, summary_id, system_event, wake_at, wake_event), system template stripping, and trailing prefill is NOT applicable here (last msg is user).",
+    "layers": ["L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8", "thinking-protection"]
+  }
+}

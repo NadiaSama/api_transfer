@@ -1,0 +1,69 @@
+{
+  "model": "claude-sonnet-4-20250514",
+  "max_tokens": 4096,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Run the command `ls -la` and search for OpenClaw config files. Also check the heartbeat status."
+    }
+  ],
+  "system": "You are a helpful assistant.",
+  "tools": [
+    {
+      "name": "exec",
+      "description": "Execute a shell command on the OpenClaw platform and return stdout/stderr",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "command": { "type": "string", "description": "The shell command to execute" },
+          "session_id": { "type": "string", "description": "Active session identifier" },
+          "agent_id": { "type": "string", "description": "Agent that owns this execution" }
+        },
+        "required": ["command"]
+      }
+    },
+    {
+      "name": "web_search",
+      "description": "Search the web for information via clawhub.com",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string", "description": "Search query" },
+          "conversation_id": { "type": "string", "description": "Conversation context" }
+        },
+        "required": ["query"]
+      }
+    },
+    {
+      "name": "lcm_expand_query",
+      "description": "Expand context query for lossless-claw memory system",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string", "description": "Query to expand" },
+          "summaryIds": { "type": "array", "items": { "type": "string" }, "description": "Summary IDs to include" }
+        },
+        "required": ["query"]
+      }
+    },
+    {
+      "name": "lcm_expand",
+      "description": "Expand context from lossless-claw memory",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "summary_id": { "type": "string", "description": "Summary to expand" }
+        },
+        "required": ["summary_id"]
+      }
+    }
+  ],
+  "metadata": {
+    "user_id": "test-user-02"
+  },
+  "_test": {
+    "name": "02-oc-tools",
+    "description": "Tests L2 (string sanitization), L3 (tool name renames), L5 (description stripping), L6 (property renames), L7 (CC stub injection). Key: exec→Bash, lcm_expand_query before lcm_expand, session_id→thread_id.",
+    "layers": ["L2", "L3", "L5", "L6", "L7"]
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "model": "claude-sonnet-4-20250514",
+  "max_tokens": 1024,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Hello, what is 2+2? Please answer briefly."
+    }
+  ],
+  "metadata": {
+    "user_id": "test-user-01"
+  },
+  "_test": {
+    "name": "01-minimal",
+    "description": "Baseline: no tools, no system, no triggers. Tests L1 (billing header injection) and metadata injection only.",
+    "layers": ["L1", "metadata"]
+  }
+}
