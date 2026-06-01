@@ -259,9 +259,135 @@ CLIPROXY_KEY=xxxxx \
 
 脚本输出彩色矩阵，对失败行单独汇总，便于回归。
 
+### V1.2（2026-05-27）：sub2api 接入 mapping 后浮现的两处准入 bug — ✅ 已修复
+
+把 V1.1 给出的 `model_mapping` JSON 写进 `accounts.credentials` 后，所有 cliproxy 请求立刻变成 503 `No available accounts`，比没配 mapping 还糟。根因不在调度/缓存，在准入过滤层与 `model_mapping` 的语义错配。
+
+**Bug A：`isModelSupportedByAccount` 在 cliproxy 上跑了 `NormalizeModelID`**
+
+`backend/internal/service/gateway_service.go:3729`（原代码）：
+
+```go
+// OAuth/SetupToken 账号使用 Anthropic 标准映射（短ID → 长ID）
+if account.Platform == PlatformAnthropic && account.Type != AccountTypeAPIKey {
+    requestedModel = claude.NormalizeModelID(requestedModel)  // 别名 → 全 ID
+}
+return account.IsModelSupported(requestedModel)
+```
+
+cliproxy 类型满足 `Type != AccountTypeAPIKey`，于是别名 `claude-haiku-4-5` 在准入阶段就被全局 `NormalizeModelID`（`internal/pkg/claude/constants.go:170`）改写成 `claude-haiku-4-5-20251001`。`IsModelSupported` 拿改写后的全 ID 去查 mapping，**KEYS 全是别名**（V1.1 给的形式），必然 miss → 账号被滤掉 → 503。
+
+> 关键：`NormalizeModelID` 只在准入这一个分支用，**结果没写回 body**，转发路径（line 4365）完全靠 `account.GetMappedModel` 重新查一次 mapping。所以两条路径用的是两套"翻译器"，且只有 mapping 翻译器影响实际转发出去的 model。
+
+**Bug B：`IsModelSupported` 把 mapping 当 KEY-only 白名单**
+
+`backend/internal/service/account.go:620`（原代码）只看 `mapping[requestedModel]` 是否存在，从未把 VALUES 作为合法集合。这导致即使修了 Bug A，客户端**直接发完整 ID**（如 `claude-haiku-4-5-20251001`）也会 503——KEYS 里只有别名，VALUES 里的全 ID 不被认。
+
+**修复（两处）**
+
+```go
+// gateway_service.go:3730 —— cliproxy 跳过 normalize，让准入看到原始 model 名
+if account.Platform == PlatformAnthropic &&
+   account.Type != AccountTypeAPIKey &&
+   account.Type != AccountTypeCLIProxy {
+    requestedModel = claude.NormalizeModelID(requestedModel)
+}
+```
+
+```go
+// account.go:620 —— cliproxy 时把 mapping VALUES 也纳入白名单
+if mappingSupportsRequestedModel(mapping, requestedModel) {
+    return true
+}
+if a.IsCLIProxy() {
+    for _, v := range mapping {
+        if v == requestedModel { return true }
+    }
+}
+```
+
+**扩展后的 mapping**（V1.1 的 3 条别名 + V1.2 新增 3 条 identity）
+
+```json
+{
+  "claude-haiku-4-5":   "claude-haiku-4-5-20251001",
+  "claude-sonnet-4-5":  "claude-sonnet-4-5-20250929",
+  "claude-opus-4-5":    "claude-opus-4-5-20251101",
+  "claude-opus-4-7":    "claude-opus-4-7",
+  "claude-opus-4-6":    "claude-opus-4-6",
+  "claude-sonnet-4-6":  "claude-sonnet-4-6"
+}
+```
+
+identity 条目的存在意义：客户端可能直接发完整 ID，Bug B 的修复让 VALUES 也算合法 model，identity 条目保证 cliproxy 已直接支持的全 ID 也能通过准入。
+
+**回归矩阵**（sub2api → cliproxy，2026-05-27 下午）
+
+| 请求 model | 实际转发 | HTTP |
+|---|---|---|
+| `claude-haiku-4-5` | `claude-haiku-4-5-20251001` | 200 |
+| `claude-haiku-4-5-20251001` | `claude-haiku-4-5-20251001` | 200 |
+| `claude-sonnet-4-5` | `claude-sonnet-4-5-20250929` | 200 |
+| `claude-sonnet-4-5-20250929` | `claude-sonnet-4-5-20250929` | 200 |
+| `claude-opus-4-6` | `claude-opus-4-6` | 200 |
+| `claude-sonnet-4-6` | `claude-sonnet-4-6` | 200 |
+| `claude-opus-4-7` | `claude-opus-4-7` | 上游 529 间歇过载（V1.1 已知，与本次无关） |
+
+**运维 gotcha：缓存键 `sched:meta:1`**
+
+DB 改 `accounts.credentials.model_mapping` 后**必须**：
+
+```bash
+redis-cli ... DEL "sched:meta:<account_id>"
+# 然后重启 sub2api（否则进程内的 account 对象也是旧的）
+```
+
+调度器读的是 `sched:meta:<id>` 这个序列化的 account 快照（含 `Credentials.model_mapping`），而非每次回 DB。光改 DB 不清缓存 = mapping 不生效。`scheduler_outbox` 插事件只会重建 bucket，**不会**重写 `sched:meta:<id>`，所以走 outbox 路径无法刷出新 mapping。
+
+### V1.3（2026-05-31）：CliProxyAPI 账号改走 "合规反向代理" Header 语义 — ✅ 已实现
+
+V1.2 之前，cliproxy 账号沿用 APIKey passthrough 的白名单 + 兜底逻辑。这条路径有两个长期隐患：
+
+1. **演进瓶颈**：Claude Code 每次升级新增的 Header（新 `X-Stainless-*` 字段、新 beta 标志、未来未知字段）都得跟着改 `allowedHeaders` 才能透传到 CliProxyAPI；Sub2API 实际什么也没解析这些 Header，却挡在协议演进路径上。
+2. **兜底语义错配**：Sub2API 缺省补的 `anthropic-version: 2023-06-01` / `content-type: application/json` 其实由下游 CliProxyAPI 的 `applyClaudeHeaders` 同样兜底；Sub2API 多补一层并无价值，反而让两边谁负责兜底变得模糊。
+
+把这两件事都改掉，cliproxy 路径改成**合规反向代理**——业务 Header 全透传，只在协议必要处动手：
+
+| 行为 | 旧 cliproxy（V1.2 之前） | 新 cliproxy（V1.3） |
+|---|---|---|
+| 白名单外 Header（`X-Custom-*`、未知 Claude Code Header） | 丢弃 | 原样转发 |
+| `Accept-Encoding` | 保留 | 保留 |
+| `Cookie` | 删除 | 删除（语义不变，仍避免跨边界泄漏） |
+| 鉴权（`Authorization` / `x-api-key` / `x-goog-api-key`） | 删除并替换为账号 `api_key` | 同（但用 `delHeaderRaw` 防 raw-key 残留） |
+| `Content-Type` 缺失 | 补 `application/json` | 不补（让 CliProxyAPI 自己处理） |
+| `Anthropic-Version` 缺失 | 补 `2023-06-01` | 不补 |
+| `Anthropic-Beta` 合并（`oauth-2025-04-20` 等） | 不做（一直由 CliProxyAPI 一侧合并） | 不做（保持不变） |
+| Hop-by-hop Header（`Connection` / `Keep-Alive` / `Transfer-Encoding` 等） | 通过 Go `net/http` 隐式处理 | 显式 strip（RFC 7230 §6.1，含 `Connection` value 列出的动态字段） |
+
+**普通 APIKey passthrough 账号不受影响。** build 函数顶层用 `if account.IsCLIProxy()` 拆成两条独立路径，APIKey 路径维持原有白名单 + 兜底 + Cookie strip 行为。
+
+**实现要点**
+
+新增/改动文件：
+
+| 文件 | 改动 |
+|---|---|
+| `backend/internal/service/header_util.go` | 新增 `delHeaderRaw`——`setHeaderRaw` 的对称版本，同时清掉 canonical / wire-casing / raw 三种 map key 形式 |
+| `backend/internal/service/gateway_service.go` | 新增 `hopByHopHeaders` / `replaceInboundAuthWithAPIKey` / `copyInboundHeadersForCLIProxy`；改写 `buildUpstreamRequestAnthropicAPIKeyPassthrough` 与 `buildCountTokensRequestAnthropicAPIKeyPassthrough` 的 Header 段 |
+| `backend/internal/service/cliproxy_passthrough_test.go` | 新增 7 个单测：业务 Header 透传 / 不再兜底 / Auth raw-key 泄漏防护 / hop-by-hop strip / APIKey 路径回归白名单 / count_tokens 路径行为一致 / count_tokens APIKey 回归 |
+| `backend/internal/service/cliproxy_test.go` | 调整 `TestGatewayService_BuildUpstreamRequest_CLIProxyAPIPassthrough` 断言：CLIProxy 路径下 `anthropic-version` / `content-type` 应为空 |
+| `docs/header-forwarding-sub2api-cliproxyapi.md` | §一 拆成 1.A（APIKey 旧行为）与 1.B（CLIProxy 新行为）两节 |
+
+**为什么仍删除 Cookie？** Cookie 与"白名单"是两件事。Sub2API 这一段是后端 API 调用边界，Cookie 通常承载 Sub2API ↔ 客户端的会话信息，没有继续向 CliProxyAPI 透传的合法场景，反而存在跨边界泄漏会话凭据的风险。和 APIKey passthrough 保持一致。
+
+**为什么 hop-by-hop 是静态白名单可以安全维护？** RFC 7230 §6.1 是 HTTP 协议层概念，与业务协议（Claude / Anthropic）演进解耦——不会因为 Claude Code 升级而变化。业务 Header 不行，所以业务侧用"全透传"，hop-by-hop 用静态集合。
+
+**回滚**：单一 commit，revert 即可恢复旧白名单 + 兜底 + cookie strip 行为。
+
 ## 相关文档
 
 - [`sub2api-architecture.md`](./sub2api-architecture.md) — Sub2API 整体架构
 - [`sub2api-billing.md`](./sub2api-billing.md) — 计费/配额模块细节
 - [`cliproxyapi-claude-analysis.md`](./cliproxyapi-claude-analysis.md) — CLIProxyAPI Claude Code 转换实现
 - [`claude-oauth-analysis.md`](./claude-oauth-analysis.md) — Claude OAuth 流程对比
+- [`header-forwarding-sub2api-cliproxyapi.md`](./header-forwarding-sub2api-cliproxyapi.md) — Sub2API / CliProxyAPI 链路上的 Header 处理细节
